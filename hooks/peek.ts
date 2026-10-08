@@ -45,21 +45,35 @@ export function parseSnapshot(json: string, thisPane: string | undefined): PeekP
     }
   })
 
-  // Array.prototype.sort is stable: panes keep herdr's order inside a tab.
-  return panes.sort((a, b) => a.workspaceNo - b.workspaceNo || a.tabNo - b.tabNo)
+  // Array.prototype.sort is stable: panes keep herdr's order among equals.
+  return panes.sort((a, b) => a.workspaceNo - b.workspaceNo || attention(a) - attention(b) || a.tabNo - b.tabNo)
+}
+
+/** Within a workspace the agents that need a look come first: blocked, working, other agents, shells. */
+function attention(p: PeekPane): number {
+  if (p.agent === null) return 3
+  if (p.status === 'blocked') return 0
+  if (p.status === 'working') return 1
+
+  return 2
 }
 
 export function base(cwd: string): string {
   return cwd.split('/').filter(Boolean).pop() ?? cwd
 }
 
-/** Every word of `query` must occur somewhere in the pane's searchable text. */
+/**
+ * Every word of `query` must occur somewhere in the pane's searchable text.
+ * The pane you are in is left out of an empty search and found by the word "this".
+ */
 export function filterPanes(panes: PeekPane[], query: string): PeekPane[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
-  if (words.length === 0) return panes
+  const wantsThis = words.includes('this')
+  const pool = wantsThis ? panes : panes.filter(p => !p.isThis)
+  if (words.length === 0) return pool
 
-  return panes.filter(p => {
-    const hay = [p.paneId, p.workspace, p.tab, p.agent ?? 'shell', p.status, p.title, p.cwd].join(' ').toLowerCase()
+  return pool.filter(p => {
+    const hay = [p.paneId, p.workspace, p.tab, p.agent ?? 'shell', p.status, p.title, p.cwd, p.isThis ? 'this' : ''].join(' ').toLowerCase()
 
     return words.every(w => hay.includes(w))
   })
@@ -69,12 +83,42 @@ export function clip(line: string, columns: number): string {
   return line.length > columns ? `${line.slice(0, Math.max(1, columns - 1))}…` : line
 }
 
-export function rowLabel(p: PeekPane, isCurrent: boolean, columns: number): string {
+/** The row's text; the workspace is the group heading above it and the status dot is drawn beside it. */
+export function rowLabel(p: PeekPane, columns: number): string {
   const kind = p.agent === null ? 'shell' : `${p.agent} ${p.status}`
   const title = p.agent !== null && p.title !== '' ? ` — ${p.title}` : ''
-  const line = `${isCurrent ? '▸' : ' '} ${p.paneId}  ${p.workspace}/${p.tab} · ${kind} · ${base(p.cwd)}${p.isThis ? ' (this)' : ''}${title}`
 
-  return clip(line, columns)
+  return clip(`${p.tab} · ${kind} · ${base(p.cwd)}${p.isThis ? ' (this)' : ''}${title}`, columns)
+}
+
+/** Theme keys, so the dots follow the person's theme. */
+export function statusColor(status: string): 'ide' | 'warning' | 'success' | 'error' | 'inactive' {
+  if (status === 'working') return 'ide'
+  if (status === 'blocked') return 'error'
+  if (status === 'idle') return 'warning'
+  if (status === 'done') return 'success'
+
+  return 'inactive'
+}
+
+export type Group = { workspace: string; panes: PeekPane[] }
+
+/** Panes grouped by workspace in list order, cut to `room` lines (a heading costs one); `hidden` counts the panes cut. */
+export function layoutRows(list: PeekPane[], room: number): { groups: Group[]; hidden: number } {
+  const groups: Group[] = []
+  let used = 0
+  let shown = 0
+  for (const p of list) {
+    const last = groups[groups.length - 1]
+    const opens = last?.workspace !== p.workspace
+    if (used + (opens ? 2 : 1) > room) break
+    if (opens) groups.push({ workspace: p.workspace, panes: [p] })
+    else last.panes.push(p)
+    used += opens ? 2 : 1
+    shown += 1
+  }
+
+  return { groups, hidden: list.length - shown }
 }
 
 /** The pane Enter acts on: the ring's row if it is still listed, else the first. */

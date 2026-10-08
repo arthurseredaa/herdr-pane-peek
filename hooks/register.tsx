@@ -9,10 +9,12 @@ import {
   expandDeletion,
   filterPanes,
   formatToken,
+  layoutRows,
   paneContext,
   paneUnreadable,
   parseSnapshot,
   rowLabel,
+  statusColor,
   tokenIds,
 } from './peek'
 
@@ -92,7 +94,7 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: 'herdr panes', focus: true, closeOnEscape: true, rows: PANE_ROWS })
     await refresh($)
 
-    return { text: '↑↓ choose, Enter inserts the id, Esc closes.' }
+    return {}
   })
 
   // The chips live in the draft as plain text: repaint them after every edit and
@@ -145,35 +147,44 @@ export const register: Register = on => {
     const { Box, Button, Input, Text } = $.ui.resolve(e)
     const all = await read($, panes)
     const q = await read($, query)
-    const current = effective(filterPanes(all, q), await read($, selected))
     const problem = await read($, error)
     const columns = e.props.bodyColumns ?? 80
     const list = filterPanes(all, q)
-    const room = Math.max(3, (e.viewport?.rows ?? PANE_ROWS) - 4)
-    const shown = list.slice(0, room)
+    const total = Math.max(list.length, all.filter(p => !p.isThis).length)
+    // lines the rows and headings may take: all but the search line, the hint and a "more" line
+    const { groups, hidden } = layoutRows(list, Math.max(3, (e.viewport?.rows ?? PANE_ROWS) - 3))
 
     return (
       <Box flexDirection="column">
-        <Input
-          key="q"
-          autoFocus
-          placeholder="search: workspace, tab, cwd, agent, status…"
-          value={q}
-          submitLabel="insert id"
-          onInput={value => setQuery($, value)}
-          onSubmit={() => pickFirst($)}
-        />
-        {problem !== null && <Text color="red">{problem}</Text>}
-        {problem === null && list.length === 0 && <Text dimColor>No panes found.</Text>}
-        {shown.map(p => (
-          <Button
-            key={`row:${p.paneId}`}
-            plain
-            label={rowLabel(p, p.paneId === current?.paneId, columns - 2)}
-            onPress={() => pick($, p.paneId)}
-          />
+        <Box>
+          <Box flexGrow={1}>
+            <Input
+              key="q"
+              autoFocus
+              placeholder="search…"
+              value={q}
+              submitLabel="insert"
+              onInput={value => setQuery($, value)}
+              onSubmit={() => pickFirst($)}
+            />
+          </Box>
+          <Text dimColor>{` ${list.length}/${total}`}</Text>
+        </Box>
+        {problem !== null && <Text color="error">{problem}</Text>}
+        {problem === null && list.length === 0 && <Text color="inactive">No panes found.</Text>}
+        {groups.map(g => (
+          <Box key={`ws:${g.workspace}`} flexDirection="column">
+            <Text bold color="claude">{g.workspace}</Text>
+            {g.panes.map(p => (
+              <Box key={`pane:${p.paneId}`}>
+                <Text color={statusColor(p.status)}> ● </Text>
+                <Button plain dimColor label={rowLabel(p, columns - 4)} key={`row:${p.paneId}`} onPress={() => pick($, p.paneId)} />
+              </Box>
+            ))}
+          </Box>
         ))}
-        {list.length > shown.length && <Text dimColor>{`… ${list.length - shown.length} more, narrow the search`}</Text>}
+        {hidden > 0 && <Text color="inactive">{`… ${hidden} more, narrow the search`}</Text>}
+        <Text color="inactive">↑↓ choose · ⏎ insert · esc close</Text>
       </Box>
     )
   })

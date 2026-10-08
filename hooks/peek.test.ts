@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { base, clip, decorate, describeOrigin, effective, expandDeletion, filterPanes, findTokens, formatToken, paneContext, paneUnreadable, parseSnapshot, rowLabel, tokenIds } from './peek'
+import { base, clip, decorate, describeOrigin, effective, expandDeletion, filterPanes, findTokens, formatToken, layoutRows, paneContext, paneUnreadable, parseSnapshot, rowLabel, statusColor, tokenIds } from './peek'
 
 // The kit raises `prompt.edit` through a method its typings do not list.
 type Edited = { text: string; cursor: number; decorations?: { start: number; end: number; backgroundColor?: string }[] }
@@ -29,22 +29,69 @@ const SNAPSHOT = JSON.stringify({
 
 test('parseSnapshot joins workspaces, tabs and agents, in sidebar order', () => {
   const panes = parseSnapshot(SNAPSHOT, 'w2:p4')
-  expect(panes.map(p => p.paneId)).toEqual(['w1:p1', 'w2:p3', 'w2:p4'])
+  expect(panes.map(p => p.paneId)).toEqual(['w1:p1', 'w2:p4', 'w2:p3'])
   expect(panes[0]).toEqual({
     paneId: 'w1:p1', workspace: 'ai-news', workspaceNo: 1, tab: 'main', tabNo: 1,
     agent: null, status: 'shell', title: 'user@host:~/Projects/ai-news', cwd: '/h/Projects/ai-news', isThis: false,
   })
-  expect(panes[2]).toMatchObject({ agent: 'claude', status: 'working', title: 'Interview prep', isThis: true })
+  expect(panes[1]).toMatchObject({ agent: 'claude', status: 'working', title: 'Interview prep', isThis: true })
+})
+
+test('parseSnapshot puts blocked and working agents above idle ones and shells, inside a workspace', () => {
+  const snap = JSON.stringify({
+    result: {
+      snapshot: {
+        workspaces: [{ workspace_id: 'w1', label: 'a', number: 1 }, { workspace_id: 'w2', label: 'b', number: 2 }],
+        tabs: [{ tab_id: 't', label: '1', number: 1 }],
+        panes: [
+          { pane_id: 'w1:shell', workspace_id: 'w1', tab_id: 't' },
+          { pane_id: 'w1:idle', workspace_id: 'w1', tab_id: 't' },
+          { pane_id: 'w1:work', workspace_id: 'w1', tab_id: 't' },
+          { pane_id: 'w1:block', workspace_id: 'w1', tab_id: 't' },
+          { pane_id: 'w2:idle', workspace_id: 'w2', tab_id: 't' },
+        ],
+        agents: [
+          { pane_id: 'w1:idle', agent: 'claude', agent_status: 'idle' },
+          { pane_id: 'w1:work', agent: 'claude', agent_status: 'working' },
+          { pane_id: 'w1:block', agent: 'claude', agent_status: 'blocked' },
+          { pane_id: 'w2:idle', agent: 'claude', agent_status: 'idle' },
+        ],
+      },
+    },
+  })
+  expect(parseSnapshot(snap, undefined).map(p => p.paneId)).toEqual(['w1:block', 'w1:work', 'w1:idle', 'w1:shell', 'w2:idle'])
 })
 
 test('filterPanes: every word must match somewhere, across workspaces', () => {
   const panes = parseSnapshot(SNAPSHOT, undefined)
   expect(filterPanes(panes, '').length).toBe(3)
-  expect(filterPanes(panes, 'career').map(p => p.paneId)).toEqual(['w2:p3', 'w2:p4'])
+  // the pane you are in stays out of the list until you ask for it with "this"
+  const mine = parseSnapshot(SNAPSHOT, 'w2:p4')
+  expect(filterPanes(mine, '').map(p => p.paneId)).toEqual(['w1:p1', 'w2:p3'])
+  expect(filterPanes(mine, 'career').map(p => p.paneId)).toEqual(['w2:p3'])
+  expect(filterPanes(mine, 'this').map(p => p.paneId)).toEqual(['w2:p4'])
+  expect(filterPanes(mine, 'this career').map(p => p.paneId)).toEqual(['w2:p4'])
+  expect(filterPanes(panes, 'career').map(p => p.paneId)).toEqual(['w2:p4', 'w2:p3'])
   expect(filterPanes(panes, 'career claude').map(p => p.paneId)).toEqual(['w2:p4'])
   expect(filterPanes(panes, 'interview WORKING').map(p => p.paneId)).toEqual(['w2:p4'])
   expect(filterPanes(panes, 'w1:p1').map(p => p.paneId)).toEqual(['w1:p1'])
   expect(filterPanes(panes, 'nope')).toEqual([])
+})
+
+test('layoutRows groups by workspace and cuts the list to the room it has', () => {
+  const panes = parseSnapshot(SNAPSHOT, undefined)
+  expect(layoutRows(panes, 10)).toEqual({
+    groups: [
+      { workspace: 'ai-news', panes: [panes[0]] },
+      { workspace: 'career-ops', panes: [panes[1], panes[2]] },
+    ],
+    hidden: 0,
+  })
+  // a header costs a line: 4 lines hold ai-news (2) and one career-ops row (2)
+  const cut = layoutRows(panes, 4)
+  expect(cut.groups.map(g => g.panes.length)).toEqual([1, 1])
+  expect(cut.hidden).toBe(1)
+  expect(layoutRows([], 5)).toEqual({ groups: [], hidden: 0 })
 })
 
 test('effective keeps the ring row while listed, else the first', () => {
@@ -54,10 +101,15 @@ test('effective keeps the ring row while listed, else the first', () => {
   expect(effective([], null)).toBeUndefined()
 })
 
-test('rowLabel, clip, base', () => {
-  const [shell, , agent] = parseSnapshot(SNAPSHOT, 'w2:p4')
-  expect(rowLabel(shell!, false, 200)).toBe('  w1:p1  ai-news/main · shell · ai-news')
-  expect(rowLabel(agent!, true, 200)).toBe('▸ w2:p4  career-ops/1 · claude working · career-ops (this) — Interview prep')
+test('rowLabel, clip, base, statusColor', () => {
+  const [shell, agent] = parseSnapshot(SNAPSHOT, 'w2:p4')
+  expect(rowLabel(shell!, 200)).toBe('main · shell · ai-news')
+  expect(rowLabel(agent!, 200)).toBe('1 · claude working · career-ops (this) — Interview prep')
+  expect(statusColor('working')).toBe('ide')
+  expect(statusColor('blocked')).toBe('error')
+  expect(statusColor('idle')).toBe('warning')
+  expect(statusColor('done')).toBe('success')
+  expect(statusColor('shell')).toBe('inactive')
   expect(clip('abcdef', 4)).toBe('abc…')
   expect(base('/a/b/career-ops')).toBe('career-ops')
 })
@@ -75,7 +127,7 @@ test('/pane-peek opens a focused pane', async ($, on) => {
   const out = await $.command.run({ command: 'pane-peek', args: '' } as never)
 
   expect(opened).toEqual([{ id: 'pane-peek', focus: true }])
-  expect(out.text).toContain('Enter')
+  expect(out.text).toBeUndefined()
 })
 
 test('formatToken, findTokens and decorate', () => {
@@ -172,6 +224,32 @@ test('picking a row inserts the chip and toasts where the pane lives', async ($,
 
   expect(filled).toEqual([{ text: '[herdr-id:w1:p1] ', mode: 'insert' }])
   expect(toasts).toEqual(['inserted pane from ai-news/main · ~/Projects/ai-news'])
+  await ui.unmount()
+})
+
+test('the picker groups rows by workspace, hides this pane and counts matches', async ($, on) => {
+  mock.env(on, { HERDR_PANE_ID: 'w2:p4', HOME: '/h' })
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: SNAPSHOT, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+
+  await $.command.run({ command: 'pane-peek', args: '' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'pane-peek',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'pane-peek',
+    props: { bodyColumns: 80 } as never,
+  })
+
+  const rows = await ui.findAll({ type: 'Button' })
+  expect(rows.map(r => r.key)).toEqual(['row:w1:p1', 'row:w2:p3'])
+  expect(rows.map(r => r.text)).toEqual(['main · shell · ai-news', '1 · shell · career-ops'])
+  expect(await ui.find({ text: 'career-ops' })).toBeDefined()
+  expect(await ui.find({ text: ' 2/2' })).toBeDefined()
+
+  await ui.input({ key: 'q', text: 'this', kind: 'change' })
+  expect((await ui.findAll({ type: 'Button' })).map(r => r.key)).toEqual(['row:w2:p4'])
+  expect(await ui.find({ text: ' 1/2' })).toBeDefined()
   await ui.unmount()
 })
 

@@ -26,7 +26,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope makes it availa
 
 The pane lands in the prompt at the cursor as a marker with a trailing space: `[herdr-id:w1E:p4] `. Keep typing around it: "[herdr-id:w1E:p4] why do the tests fail there?". The marker is drawn as a chip in your theme's suggestion colors, and Backspace or Delete next to it removes the whole marker. A toast says where the pane lives (`workspace/tab · ~/path`). If the prompt cannot take text, the marker is copied to the clipboard instead.
 
-Each row looks like `w1E:p4  my-workspace/1 · claude idle · my-project (this) — session title`; `(this)` marks the pane you are in. The list refreshes every 5 seconds while the picker is open.
+Panes are grouped under their workspace. Each row is `● tab · claude idle · my-project — session title`: the dot is green for done, yellow for idle, blue for working, red for blocked and grey for a plain shell, and agents that are blocked or working are listed first inside their workspace. The counter beside the search field shows `matches/total`. The pane you are in is left out of the list; type `this` to find it (it is marked `(this)`). The list refreshes every 5 seconds while the picker is open.
 
 ## Panes are read for you
 
