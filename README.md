@@ -32,9 +32,9 @@ Each row looks like `w1E:p4  my-workspace/1 · claude idle · my-project (this) 
 
 When you send a prompt that contains markers, the mod reads each marked pane first (`herdr pane read`, the last 120 lines, at most 3 panes, anything unreadable is reported) and hands the snapshot to Claude beside your message. Claude answers from it in one step instead of loading a skill and running the command itself, which is much faster. The snapshot is taken when you press Enter, and it goes to the model, so keep that in mind for panes that show secrets. To act in a pane (send input, run something) Claude still uses the herdr skill below.
 
-## Teach Claude what the marker means
+## Let Claude act in panes (recommended)
 
-The marker is only text. Claude understands it when the official herdr skill is installed, because the skill explains herdr panes and the `herdr` CLI, and the word `herdr` in the marker is what makes Claude load it. Install it once:
+Reading works on its own: the mod attaches the pane to your message and says what the marker refers to. To let Claude *do* things in a pane (send input, run a command, prompt the agent running there), install the official herdr skill, which explains herdr panes and the `herdr` CLI. The word `herdr` in the marker is what makes Claude load it. Install it once:
 
 ```
 npx skills add herdrdev/herdr --skill herdr -g -a claude-code
@@ -49,7 +49,7 @@ Optional: `herdr integration install claude` adds a hook that lets herdr see Cla
 ## Requirements
 
 - Claude Code started inside herdr (the `herdr` CLI on `PATH`; `HERDR_PANE_ID` is how the mod marks your own pane).
-- A Claude Code build with function-hook mods enabled.
+- Claude Code 2.1.287 or later (mods are on by default). The mods API can change between releases.
 
 ## Hacking on it
 
