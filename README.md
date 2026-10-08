@@ -2,9 +2,7 @@
 
 A [Claude Code](https://claude.com/claude-code) mod for people who run their sessions inside herdr. Type `/pane-peek`, search the panes of **every** workspace, press Enter, and the pane id lands in your prompt, so you can tell Claude exactly which pane to look at or act on.
 
-<!-- Add screenshots to docs/screenshots/ and reference them here, e.g.
-![pane-peek](docs/screenshots/pane-peek.png)
--->
+![/pane-peek picker listing panes from every workspace](docs/screenshots/picker.png)
 
 ## Install
 
