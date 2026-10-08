@@ -1,10 +1,18 @@
 {
   "name": "pane-peek",
-  "version": "0.1.0",
-  "description": "/pane-peek: search panes of every herdr workspace and put the chosen id in the prompt",
-  "author": { "name": "arthurseredaa", "url": "https://github.com/arthurseredaa" },
+  "version": "0.2.0",
+  "description": "/pane-peek: search panes of every herdr workspace and insert a [herdr-id:...] chip for the chosen pane into the prompt",
+  "author": {
+    "name": "arthurseredaa",
+    "url": "https://github.com/arthurseredaa"
+  },
   "repository": "https://github.com/arthurseredaa/herdr-pane-peek",
   "license": "MIT",
-  "keywords": ["herdr", "panes", "prompt", "mod"],
+  "keywords": [
+    "herdr",
+    "panes",
+    "prompt",
+    "mod"
+  ],
   "types": "./types/index.d.ts"
 }

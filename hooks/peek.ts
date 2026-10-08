@@ -1,3 +1,5 @@
+import type { PromptDecoration } from 'claude-code'
+
 import type { PeekPane } from '../types'
 
 type Snapshot = {
@@ -78,4 +80,48 @@ export function rowLabel(p: PeekPane, isCurrent: boolean, columns: number): stri
 /** The pane Enter acts on: the ring's row if it is still listed, else the first. */
 export function effective(list: PeekPane[], selected: string | null): PeekPane | undefined {
   return list.find(p => p.paneId === selected) ?? list[0]
+}
+
+/** What the prompt gets for a picked pane: a marker the herdr skill can recognise. */
+export function formatToken(paneId: string): string {
+  return `[herdr-id:${paneId}]`
+}
+
+export type Span = { start: number; end: number }
+
+export function findTokens(text: string): Span[] {
+  return [...text.matchAll(/\[herdr-id:[^\]\s]+\]/g)].map(m => ({ start: m.index, end: m.index + m[0].length }))
+}
+
+/** Theme keys, so the chip follows the person's theme: Claude's suggestion accent behind inverse text. */
+const CHIP = { color: 'inverseText', backgroundColor: 'suggestion', bold: true } as const
+
+export function decorate(text: string): PromptDecoration[] {
+  return findTokens(text).map(span => ({ ...span, ...CHIP }))
+}
+
+/**
+ * A deletion that touches a token takes the whole token with it, like a placeholder chip.
+ * `[start, end)` is the span the edit removed from `text`, the draft before the edit.
+ * Returns the draft and cursor after the widened deletion, or null when no token is touched.
+ */
+export function expandDeletion(text: string, start: number, end: number): { text: string; cursor: number } | null {
+  let from = start
+  let to = end
+  for (const t of findTokens(text)) {
+    if (t.start < to && t.end > from) {
+      from = Math.min(from, t.start)
+      to = Math.max(to, t.end)
+    }
+  }
+  if (from === start && to === end) return null
+
+  return { text: text.slice(0, from) + text.slice(to), cursor: from }
+}
+
+/** Where a pane lives, for the toast: `workspace/tab · ~/path`. */
+export function describeOrigin(p: PeekPane, home: string | undefined): string {
+  const short = home !== undefined && home !== '' && p.cwd.startsWith(home) ? `~${p.cwd.slice(home.length)}` : p.cwd
+
+  return `${p.workspace}/${p.tab} · ${short}`
 }

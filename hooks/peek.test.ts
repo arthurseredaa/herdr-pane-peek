@@ -1,6 +1,10 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { base, clip, effective, filterPanes, parseSnapshot, rowLabel } from './peek'
+import { base, clip, decorate, describeOrigin, effective, expandDeletion, filterPanes, findTokens, formatToken, parseSnapshot, rowLabel } from './peek'
+
+// The kit raises `prompt.edit` through a method its typings do not list.
+type Edited = { text: string; cursor: number; decorations?: { start: number; end: number; backgroundColor?: string }[] }
+const edit = ($: unknown, input: unknown) => ($ as { prompt: { edit: (input: unknown) => Promise<Edited> } }).prompt.edit(input)
 
 const SNAPSHOT = JSON.stringify({
   result: {
@@ -64,12 +68,109 @@ test('/pane-peek opens a focused pane', async ($, on) => {
   on('ui.open', (_$, e) => {
     opened.push({ id: e.id, focus: e.focus })
 
-    return { value: { isOpen: true } }
+    return { value: { isPlaced: true as const } }
   })
   on('process.run', () => ({ value: { exitCode: 0, stdout: SNAPSHOT, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
 
-  const out = await $.command.run({ command: 'pane-peek', args: '' })
+  const out = await $.command.run({ command: 'pane-peek', args: '' } as never)
 
   expect(opened).toEqual([{ id: 'pane-peek', focus: true }])
   expect(out.text).toContain('Enter')
+})
+
+test('formatToken, findTokens and decorate', () => {
+  expect(formatToken('w1E:p4')).toBe('[herdr-id:w1E:p4]')
+  const text = 'see [herdr-id:w1E:p4] and [herdr-id:w2:p1] ok [not-a-token] [herdr-id:]'
+  expect(findTokens(text)).toEqual([
+    { start: 4, end: 21 },
+    { start: 26, end: 42 },
+  ])
+  const runs = decorate(text)
+  expect(runs.length).toBe(2)
+  expect(runs[0]).toMatchObject({ start: 4, end: 21, color: 'inverseText', backgroundColor: 'suggestion' })
+})
+
+test('expandDeletion: a deletion touching a token takes all of it', () => {
+  const text = 'look at [herdr-id:w1E:p4] now' // token spans 8..25
+  // Backspace right after the closing bracket removes `]` only; the whole token goes.
+  expect(expandDeletion(text, 24, 25)).toEqual({ text: 'look at  now', cursor: 8 })
+  // Backspace from inside, Delete on the opening bracket, a selection crossing one edge.
+  expect(expandDeletion(text, 12, 13)).toEqual({ text: 'look at  now', cursor: 8 })
+  expect(expandDeletion(text, 8, 9)).toEqual({ text: 'look at  now', cursor: 8 })
+  expect(expandDeletion(text, 3, 10)).toEqual({ text: 'loo now', cursor: 3 })
+  // Edits that miss the token are left to the editor: the char before it, the space after it.
+  expect(expandDeletion(text, 7, 8)).toBeNull()
+  expect(expandDeletion(text, 25, 26)).toBeNull()
+  expect(expandDeletion('no tokens here', 0, 3)).toBeNull()
+})
+
+test('prompt.edit repaints chips and widens a Backspace', async ($, on) => {
+  const text = 'a [herdr-id:w1E:p4] b'
+  on('prompt.edit', (_$, e) => ({
+    text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end),
+    cursor: e.start + e.inputText.length,
+  }))
+
+  const typed = await edit($, {
+    origin: { kind: 'composer' },
+    text,
+    cursor: text.length,
+    start: text.length,
+    end: text.length,
+    inputText: '!',
+  })
+  expect(typed.text).toBe('a [herdr-id:w1E:p4] b!')
+  expect(typed.decorations).toMatchObject([{ start: 2, end: 19, backgroundColor: 'suggestion' }])
+
+  const erased = await edit($, {
+    origin: { kind: 'composer' },
+    text,
+    cursor: 19,
+    start: 18,
+    end: 19,
+    inputText: '',
+  })
+  expect(erased.text).toBe('a  b')
+  expect(erased.cursor).toBe(2)
+  expect(erased.decorations ?? []).toEqual([])
+})
+
+test('describeOrigin shows workspace/tab and a ~-shortened path', () => {
+  const [pane] = parseSnapshot(SNAPSHOT, undefined)
+  expect(describeOrigin({ ...pane!, cwd: '/h/Projects/ai-news' }, '/h')).toBe('ai-news/main · ~/Projects/ai-news')
+  expect(describeOrigin({ ...pane!, cwd: '/srv/app' }, '/h')).toBe('ai-news/main · /srv/app')
+  expect(describeOrigin({ ...pane!, cwd: '/h/x' }, undefined)).toBe('ai-news/main · /h/x')
+})
+
+test('picking a row inserts the chip and toasts where the pane lives', async ($, on) => {
+  const filled: { text: string; mode?: string }[] = []
+  const toasts: string[] = []
+  mock.env(on, { HERDR_PANE_ID: 'w2:p4', HOME: '/h' })
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: SNAPSHOT, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('prompt.fill', (_$, e) => {
+    filled.push({ text: e.text, mode: e.mode })
+
+    return { isFilled: true }
+  })
+  on('ui.toast', (_$, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
+
+  await $.command.run({ command: 'pane-peek', args: '' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'pane-peek',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'pane-peek',
+    props: { bodyColumns: 80 } as never,
+  })
+  await ui.press({ key: 'row:w1:p1' })
+
+  expect(filled).toEqual([{ text: '[herdr-id:w1:p1] ', mode: 'insert' }])
+  expect(toasts).toEqual(['inserted pane from ai-news/main · ~/Projects/ai-news'])
+  await ui.unmount()
 })

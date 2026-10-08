@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { effective, filterPanes, parseSnapshot, rowLabel } from './peek'
+import { decorate, describeOrigin, effective, expandDeletion, filterPanes, formatToken, parseSnapshot, rowLabel } from './peek'
 
 const PANE = 'pane-peek'
 const REFRESH_MS = 5_000
@@ -38,12 +38,15 @@ async function highlight($: EngineInterface, paneId: string) {
 /** Closes the pane first: while it holds the keys the prompt box refuses a fill. */
 async function pick($: EngineInterface, paneId: string) {
   await $.ui.close({ id: PANE })
-  const filled = await $.prompt.fill({ text: `${paneId} `, mode: 'insert' })
+  const token = formatToken(paneId)
+  const found = (await read($, panes)).find(p => p.paneId === paneId)
+  const from = found === undefined ? paneId : describeOrigin(found, await $.env.get('HOME'))
+  const filled = await $.prompt.fill({ text: `${token} `, mode: 'insert', decorations: decorate(token) })
   if (filled.isFilled) {
-    $.ui.toast(`inserted ${paneId}`)
+    $.ui.toast(`inserted pane from ${from}`)
   } else {
-    await $.ui.copy({ text: paneId })
-    $.ui.toast(`${paneId} copied (the prompt would not take it)`)
+    await $.ui.copy({ text: token })
+    $.ui.toast(`copied pane from ${from} (the prompt would not take it)`)
   }
 }
 
@@ -79,6 +82,17 @@ export const register: Register = on => {
     return { text: '↑↓ choose, Enter inserts the id, Esc closes.' }
   })
 
+  // The chips live in the draft as plain text: repaint them after every edit and
+  // let a deletion that touches one take the whole of it.
+  on('prompt.edit', async ($, e, next) => {
+    const done = await next(e)
+    const widened = e.inputText === '' ? expandDeletion(e.text, e.start, e.end) : null
+    const text = widened?.text ?? done.text
+    const cursor = widened?.cursor ?? done.cursor
+
+    return { ...done, text, cursor, decorations: [...(done.decorations ?? []), ...decorate(text)] }
+  }).catch(($, e, next) => next(e))
+
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE) isOpen = false
 
@@ -94,7 +108,9 @@ export const register: Register = on => {
     return moved
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    // herdr is a terminal tool; the mobile surface has no text field to draw.
+    if (e.surface === 'mobile') return next(e)
     const { Box, Button, Input, Text } = $.ui.resolve(e)
     const all = await read($, panes)
     const q = await read($, query)
