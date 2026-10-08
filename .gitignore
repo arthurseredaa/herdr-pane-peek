@@ -1,0 +1,4 @@
+# written by Claude Code every time it loads the mod
+.claude-plugin/types/
+node_modules/
+.DS_Store
