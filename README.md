@@ -4,8 +4,6 @@ A [Claude Code](https://claude.com/claude-code) mod for people who run their ses
 
 ![/pane-peek in action: search, pick, the marker lands in the prompt](docs/screenshots/demo.gif)
 
-![/pane-peek picker listing panes from every workspace](docs/screenshots/picker.png)
-
 ## Install
 
 In a Claude Code terminal session:
@@ -29,6 +27,10 @@ Answer `y` to add the marketplace, then pick a scope (user scope makes it availa
 The pane lands in the prompt at the cursor as a marker with a trailing space: `[herdr-id:w1E:p4] `. Keep typing around it: "[herdr-id:w1E:p4] why do the tests fail there?". The marker is drawn as a chip in your theme's suggestion colors, and Backspace or Delete next to it removes the whole marker. A toast says where the pane lives (`workspace/tab · ~/path`). If the prompt cannot take text, the marker is copied to the clipboard instead.
 
 Each row looks like `w1E:p4  my-workspace/1 · claude idle · my-project (this) — session title`; `(this)` marks the pane you are in. The list refreshes every 5 seconds while the picker is open.
+
+## Panes are read for you
+
+When you send a prompt that contains markers, the mod reads each marked pane first (`herdr pane read`, the last 120 lines, at most 3 panes, anything unreadable is reported) and hands the snapshot to Claude beside your message. Claude answers from it in one step instead of loading a skill and running the command itself, which is much faster. The snapshot is taken when you press Enter, and it goes to the model, so keep that in mind for panes that show secrets. To act in a pane (send input, run something) Claude still uses the herdr skill below.
 
 ## Teach Claude what the marker means
 

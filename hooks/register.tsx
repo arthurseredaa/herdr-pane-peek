@@ -1,7 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { decorate, describeOrigin, effective, expandDeletion, filterPanes, formatToken, parseSnapshot, rowLabel } from './peek'
+import {
+  READ_LINES,
+  decorate,
+  describeOrigin,
+  effective,
+  expandDeletion,
+  filterPanes,
+  formatToken,
+  paneContext,
+  paneUnreadable,
+  parseSnapshot,
+  rowLabel,
+  tokenIds,
+} from './peek'
 
 const PANE = 'pane-peek'
 const REFRESH_MS = 5_000
@@ -91,6 +104,24 @@ export const register: Register = on => {
     const cursor = widened?.cursor ?? done.cursor
 
     return { ...done, text, cursor, decorations: [...(done.decorations ?? []), ...decorate(text)] }
+  }).catch(($, e, next) => next(e))
+
+  // A marked pane is read here, once, so the model answers from the snapshot
+  // instead of loading the skill and running `herdr pane read` itself.
+  on('prompt.submit', async ($, e, next) => {
+    const ids = tokenIds(e.text)
+    if (ids.length === 0) return next(e)
+
+    const blocks: string[] = []
+    for (const id of ids) {
+      const got = await $.process.run(
+        ['herdr', 'pane', 'read', id, '--source', 'recent-unwrapped', '--lines', String(READ_LINES)],
+        { timeoutMs: 5000 },
+      )
+      blocks.push(got.exitCode === 0 ? paneContext(id, got.stdout) : paneUnreadable(id, got.stderr.trim() || `exit ${got.exitCode}`))
+    }
+
+    return next({ ...e, context: [...(e.context ?? []), ...blocks] })
   }).catch(($, e, next) => next(e))
 
   on('ui.close', async ($, e, next) => {

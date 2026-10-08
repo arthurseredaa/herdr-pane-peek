@@ -125,3 +125,30 @@ export function describeOrigin(p: PeekPane, home: string | undefined): string {
 
   return `${p.workspace}/${p.tab} · ${short}`
 }
+
+export const READ_LINES = 120
+export const MAX_PANES = 3
+const MAX_CHARS = 20_000
+
+/** The distinct pane ids named by `[herdr-id:...]` markers in `text`, in order, at most MAX_PANES. */
+export function tokenIds(text: string): string[] {
+  const ids = [...text.matchAll(/\[herdr-id:([^\]\s]+)\]/g)].map(m => m[1]!)
+
+  return [...new Set(ids)].slice(0, MAX_PANES)
+}
+
+/** What the model reads beside the prompt for one marked pane. */
+export function paneContext(paneId: string, output: string): string {
+  const body = output.trim() === '' ? '(the pane is empty)' : output.trimEnd().slice(-MAX_CHARS)
+
+  return [
+    `Contents of herdr pane ${paneId}, read when the prompt was sent (\`herdr pane read ${paneId} --source recent-unwrapped --lines ${READ_LINES}\`); a snapshot, not live. The user's marker [herdr-id:${paneId}] refers to this pane. To act in a pane (send input, run commands) use the herdr skill.`,
+    '```',
+    body,
+    '```',
+  ].join('\n')
+}
+
+export function paneUnreadable(paneId: string, detail: string): string {
+  return `The user marked herdr pane ${paneId} but it could not be read (${detail}). Use the herdr skill to find out why if it matters.`
+}

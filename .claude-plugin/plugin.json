@@ -1,7 +1,7 @@
 {
   "name": "pane-peek",
-  "version": "0.2.0",
-  "description": "/pane-peek: search panes of every herdr workspace and insert a [herdr-id:...] chip for the chosen pane into the prompt",
+  "version": "0.3.0",
+  "description": "/pane-peek: search panes of every herdr workspace, insert a [herdr-id:...] chip for the chosen one, and read marked panes for Claude when you send",
   "author": {
     "name": "arthurseredaa",
     "url": "https://github.com/arthurseredaa"

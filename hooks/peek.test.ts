@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { base, clip, decorate, describeOrigin, effective, expandDeletion, filterPanes, findTokens, formatToken, parseSnapshot, rowLabel } from './peek'
+import { base, clip, decorate, describeOrigin, effective, expandDeletion, filterPanes, findTokens, formatToken, paneContext, paneUnreadable, parseSnapshot, rowLabel, tokenIds } from './peek'
 
 // The kit raises `prompt.edit` through a method its typings do not list.
 type Edited = { text: string; cursor: number; decorations?: { start: number; end: number; backgroundColor?: string }[] }
@@ -173,4 +173,54 @@ test('picking a row inserts the chip and toasts where the pane lives', async ($,
   expect(filled).toEqual([{ text: '[herdr-id:w1:p1] ', mode: 'insert' }])
   expect(toasts).toEqual(['inserted pane from ai-news/main · ~/Projects/ai-news'])
   await ui.unmount()
+})
+
+test('tokenIds: distinct ids in order, capped at three', () => {
+  expect(tokenIds('no markers')).toEqual([])
+  expect(tokenIds('a [herdr-id:w1:p1] b [herdr-id:w2:p3] c [herdr-id:w1:p1]')).toEqual(['w1:p1', 'w2:p3'])
+  expect(tokenIds('[herdr-id:a][herdr-id:b][herdr-id:c][herdr-id:d]')).toEqual(['a', 'b', 'c'])
+})
+
+test('paneContext names the pane, keeps the tail of long output, handles empty panes', () => {
+  const text = paneContext('w1:p1', 'line 1\nline 2\n')
+  expect(text).toContain('herdr pane w1:p1')
+  expect(text).toContain('[herdr-id:w1:p1]')
+  expect(text).toContain('```\nline 1\nline 2\n```')
+  expect(paneContext('w1:p1', 'x'.repeat(50_000)).length).toBeLessThan(21_000)
+  expect(paneContext('w1:p1', '  \n')).toContain('(the pane is empty)')
+  expect(paneUnreadable('w9:p9', 'pane not found')).toContain('could not be read (pane not found)')
+})
+
+test('prompt.submit reads each marked pane and attaches it as context', async ($, on) => {
+  const argvs: string[][] = []
+  on('process.run', (_$, e) => {
+    argvs.push([...e.argv])
+
+    return {
+      value: {
+        exitCode: e.argv[3] === 'w9:p9' ? 1 : 0,
+        stdout: e.argv[3] === 'w9:p9' ? '' : `output of ${e.argv[3]}`,
+        stderr: e.argv[3] === 'w9:p9' ? 'pane not found' : '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+  on('prompt.submit', (_$, e) => ({ text: e.text, context: e.context }))
+
+  const sent = await $.prompt.submit({ text: 'see [herdr-id:w1:p1] and [herdr-id:w9:p9] why?', context: ['earlier'] } as never)
+
+  expect(argvs).toEqual([
+    ['herdr', 'pane', 'read', 'w1:p1', '--source', 'recent-unwrapped', '--lines', '120'],
+    ['herdr', 'pane', 'read', 'w9:p9', '--source', 'recent-unwrapped', '--lines', '120'],
+  ])
+  expect(sent.text).toBe('see [herdr-id:w1:p1] and [herdr-id:w9:p9] why?')
+  expect(sent.context?.[0]).toBe('earlier')
+  expect(sent.context?.[1]).toContain('output of w1:p1')
+  expect(sent.context?.[2]).toContain('could not be read (pane not found)')
+
+  argvs.length = 0
+  const plain = await $.prompt.submit({ text: 'no marker here' } as never)
+  expect(argvs).toEqual([])
+  expect(plain.context ?? []).toEqual([])
 })
