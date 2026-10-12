@@ -1,4 +1,4 @@
-import type { PromptDecoration } from 'claude-code'
+import type { PromptAutocompleteSuggestion, PromptDecoration } from 'claude-code'
 
 import type { PeekPane } from '../types'
 
@@ -83,12 +83,39 @@ export function clip(line: string, columns: number): string {
   return line.length > columns ? `${line.slice(0, Math.max(1, columns - 1))}…` : line
 }
 
+/** `tab · kind · folder`, what a pane is called inside its workspace. */
+function paneName(p: PeekPane): string {
+  const kind = p.agent === null ? 'shell' : `${p.agent} ${p.status}`
+
+  return `${p.tab} · ${kind} · ${base(p.cwd)}${p.isThis ? ' (this)' : ''}`
+}
+
+/** An agent's session title; a shell's title only repeats its cwd. */
+function sessionTitle(p: PeekPane): string {
+  return p.agent !== null ? p.title : ''
+}
+
 /** The row's text; the workspace is the group heading above it and the status dot is drawn beside it. */
 export function rowLabel(p: PeekPane, columns: number): string {
-  const kind = p.agent === null ? 'shell' : `${p.agent} ${p.status}`
-  const title = p.agent !== null && p.title !== '' ? ` — ${p.title}` : ''
+  const title = sessionTitle(p)
 
-  return clip(`${p.tab} · ${kind} · ${base(p.cwd)}${p.isThis ? ' (this)' : ''}${title}`, columns)
+  return clip(`${paneName(p)}${title === '' ? '' : ` — ${title}`}`, columns)
+}
+
+/** The search a `%word,word` token asks for: a token holds no spaces, so commas stand in for them. */
+export function tokenQuery(token: string): string {
+  return token.slice(1).replaceAll(',', ' ')
+}
+
+/** The typeahead row for a pane: taking it writes the marker over the token. */
+export function suggestRow(p: PeekPane): PromptAutocompleteSuggestion {
+  const title = sessionTitle(p)
+
+  return {
+    text: `${formatToken(p.paneId)} `,
+    label: `${p.workspace} · ${paneName(p)}`,
+    ...(title === '' ? {} : { description: title }),
+  }
 }
 
 /** Theme keys, so the dots follow the person's theme. */

@@ -15,12 +15,15 @@ import {
   parseSnapshot,
   rowLabel,
   statusColor,
+  suggestRow,
   tokenIds,
+  tokenQuery,
 } from './peek'
 
 const PANE = 'pane-peek'
 const REFRESH_MS = 5_000
 const PANE_ROWS = 20
+const SUGGEST_ROWS = 8
 
 const panes = atom({ plugin: 'pane-peek', key: 'panes' } as const, [])
 const query = atom({ plugin: 'pane-peek', key: 'query' } as const, '')
@@ -73,6 +76,7 @@ async function pickFirst($: EngineInterface) {
 
 export const register: Register = on => {
   let isOpen = false
+  let suggestedAt: number | null = null
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -106,6 +110,20 @@ export const register: Register = on => {
     const cursor = widened?.cursor ?? done.cursor
 
     return { ...done, text, cursor, decorations: [...(done.decorations ?? []), ...decorate(text)] }
+  }).catch(($, e, next) => next(e))
+
+  // `%word` anywhere in the draft: the picker's search without leaving the prompt box.
+  on('prompt.autocomplete', { token: /^%/ }, async ($, e, next) => {
+    const rest = await next(e)
+    const now = await $.clock.now()
+    if (suggestedAt === null || now - suggestedAt >= REFRESH_MS) {
+      await refresh($)
+      suggestedAt = now
+    }
+    if ((await read($, error)) !== null) return rest
+    const rows = filterPanes(await read($, panes), tokenQuery(e.token)).slice(0, SUGGEST_ROWS).map(suggestRow)
+
+    return { suggestions: [...rest.suggestions, ...rows] }
   }).catch(($, e, next) => next(e))
 
   // A marked pane is read here, once, so the model answers from the snapshot

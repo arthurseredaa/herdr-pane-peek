@@ -1,10 +1,20 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { base, clip, decorate, describeOrigin, effective, expandDeletion, filterPanes, findTokens, formatToken, layoutRows, paneContext, paneUnreadable, parseSnapshot, rowLabel, statusColor, tokenIds } from './peek'
+import { base, clip, decorate, describeOrigin, effective, expandDeletion, filterPanes, findTokens, formatToken, layoutRows, paneContext, paneUnreadable, parseSnapshot, rowLabel, statusColor, suggestRow, tokenIds, tokenQuery } from './peek'
 
 // The kit raises `prompt.edit` through a method its typings do not list.
 type Edited = { text: string; cursor: number; decorations?: { start: number; end: number; backgroundColor?: string }[] }
 const edit = ($: unknown, input: unknown) => ($ as { prompt: { edit: (input: unknown) => Promise<Edited> } }).prompt.edit(input)
+
+// So is `prompt.autocomplete`: asked for the token the draft ends on, as the box asks while one types.
+type Suggested = { suggestions: { text: string; label?: string; description?: string }[] }
+const autocomplete = ($: unknown, text: string) => {
+  const start = text.search(/\S+$/)
+
+  return ($ as { prompt: { autocomplete: (input: unknown) => Promise<Suggested> } }).prompt.autocomplete({ text, cursor: text.length, token: text.slice(start), start })
+}
+
+const ran = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
 
 const SNAPSHOT = JSON.stringify({
   result: {
@@ -301,4 +311,107 @@ test('prompt.submit reads each marked pane and attaches it as context', async ($
   const plain = await $.prompt.submit({ text: 'no marker here' } as never)
   expect(argvs).toEqual([])
   expect(plain.context ?? []).toEqual([])
+})
+
+test('tokenQuery: the words after the % trigger, commas standing in for spaces', () => {
+  const panes = parseSnapshot(SNAPSHOT, undefined)
+  expect(tokenQuery('%')).toBe('')
+  expect(filterPanes(panes, tokenQuery('%career')).map(p => p.paneId)).toEqual(['w2:p4', 'w2:p3'])
+  expect(filterPanes(panes, tokenQuery('%career,claude')).map(p => p.paneId)).toEqual(['w2:p4'])
+})
+
+test('suggestRow: the marker to write, a one-line label and the session title beside it', () => {
+  const [shell, agent] = parseSnapshot(SNAPSHOT, 'w2:p4')
+  expect(suggestRow(shell!)).toEqual({ text: '[herdr-id:w1:p1] ', label: 'ai-news · main · shell · ai-news' })
+  expect(suggestRow(agent!)).toEqual({
+    text: '[herdr-id:w2:p4] ',
+    label: 'career-ops · 1 · claude working · career-ops (this)',
+    description: 'Interview prep',
+  })
+})
+
+test('a %word in the prompt offers the matching panes beneath the rows already there', async ($, on) => {
+  mock.env(on, { HERDR_PANE_ID: 'w2:p4' })
+  mock.clock(on)
+  on('process.run', () => ran(SNAPSHOT))
+  on('prompt.autocomplete', () => ({ suggestions: [{ text: '#1' }] }))
+
+  expect((await autocomplete($, 'look at %')).suggestions).toEqual([
+    { text: '#1' },
+    { text: '[herdr-id:w1:p1] ', label: 'ai-news · main · shell · ai-news' },
+    { text: '[herdr-id:w2:p3] ', label: 'career-ops · 1 · shell · career-ops' },
+  ])
+  expect((await autocomplete($, 'look at %career')).suggestions.map(s => s.text)).toEqual(['#1', '[herdr-id:w2:p3] '])
+  expect((await autocomplete($, 'look at %this,claude')).suggestions.map(s => s.text)).toEqual(['#1', '[herdr-id:w2:p4] '])
+})
+
+test('a token that does not start with % asks herdr nothing and adds no rows', async ($, on) => {
+  let asked = 0
+  mock.clock(on)
+  on('process.run', () => {
+    asked += 1
+
+    return ran(SNAPSHOT)
+  })
+  on('prompt.autocomplete', () => ({ suggestions: [{ text: '#1' }] }))
+
+  expect((await autocomplete($, 'about 50%')).suggestions).toEqual([{ text: '#1' }])
+  expect(asked).toBe(0)
+})
+
+test('the panes behind the typeahead are read again only once they are five seconds old', async ($, on) => {
+  let asked = 0
+  const clock = mock.clock(on)
+  on('process.run', () => {
+    asked += 1
+
+    return ran(SNAPSHOT)
+  })
+  on('prompt.autocomplete', () => ({ suggestions: [] }))
+
+  await autocomplete($, '%')
+  await autocomplete($, '%c')
+  await clock.advance(4_999)
+  await autocomplete($, '%ca')
+  expect(asked).toBe(1)
+
+  await clock.advance(1)
+  await autocomplete($, '%car')
+  expect(asked).toBe(2)
+})
+
+test('once herdr stops answering the typeahead offers no panes, not the ones it last saw', async ($, on) => {
+  let isUp = true
+  const clock = mock.clock(on)
+  mock.env(on, {})
+  on('process.run', () => (isUp ? ran(SNAPSHOT) : ran('', 1, 'no server')))
+  on('prompt.autocomplete', () => ({ suggestions: [{ text: '#1' }] }))
+
+  expect((await autocomplete($, '%')).suggestions.length).toBe(4)
+
+  isUp = false
+  await clock.advance(5_000)
+  expect((await autocomplete($, '%')).suggestions).toEqual([{ text: '#1' }])
+})
+
+test('the typeahead offers eight panes at most', async ($, on) => {
+  const ids = Array.from({ length: 10 }, (_, i) => `w1:p${i + 1}`)
+  mock.env(on, {})
+  mock.clock(on)
+  on('process.run', () =>
+    ran(
+      JSON.stringify({
+        result: {
+          snapshot: {
+            workspaces: [{ workspace_id: 'w1', label: 'a', number: 1 }],
+            tabs: [{ tab_id: 'w1:t1', label: 't', number: 1 }],
+            panes: ids.map(pane_id => ({ pane_id, workspace_id: 'w1', tab_id: 'w1:t1', cwd: '/x' })),
+          },
+        },
+      }),
+    ),
+  )
+  on('prompt.autocomplete', () => ({ suggestions: [] }))
+
+  expect((await autocomplete($, '%')).suggestions.map(s => s.text)).toEqual(ids.slice(0, 8).map(id => `[herdr-id:${id}] `))
 })
