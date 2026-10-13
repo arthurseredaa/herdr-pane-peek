@@ -1,7 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import type { PeekPane } from '../types'
 import {
+  MAX_PANES,
   READ_LINES,
   decorate,
   describeOrigin,
@@ -9,11 +11,14 @@ import {
   expandDeletion,
   filterPanes,
   formatToken,
+  herdrError,
   layoutRows,
+  notRun,
   paneContext,
   paneUnreadable,
+  panesSkipped,
   parseSnapshot,
-  rowLabel,
+  rowParts,
   statusColor,
   suggestRow,
   tokenIds,
@@ -29,18 +34,50 @@ const panes = atom({ plugin: 'pane-peek', key: 'panes' } as const, [])
 const query = atom({ plugin: 'pane-peek', key: 'query' } as const, '')
 const selected = atom({ plugin: 'pane-peek', key: 'selected' } as const, null)
 const error = atom({ plugin: 'pane-peek', key: 'error' } as const, null)
+const isLoaded = atom({ plugin: 'pane-peek', key: 'isLoaded' } as const, false)
+
+function said(failure: unknown): string {
+  return failure instanceof Error ? failure.message : String(failure)
+}
+
+/** Every pane herdr has; throws with what went wrong, worded for the picker's error line. */
+async function snapshot($: EngineInterface): Promise<PeekPane[]> {
+  const got = await $.process.run(['herdr', 'api', 'snapshot'], { timeoutMs: 5000 }).catch(failure => {
+    throw new Error(notRun(said(failure)))
+  })
+  if (got.exitCode !== 0) throw new Error(`herdr: ${herdrError(got.stderr, got.exitCode)}`)
+  const [thisPane, home] = [await $.env.get('HERDR_PANE_ID'), await $.env.get('HOME')]
+  try {
+    return parseSnapshot(got.stdout, thisPane, home)
+  } catch (failure) {
+    throw new Error(`herdr: its snapshot could not be read (${said(failure)})`)
+  }
+}
 
 async function refresh($: EngineInterface) {
   try {
-    const got = await $.process.run(['herdr', 'api', 'snapshot'], { timeoutMs: 5000 })
-    if (got.exitCode !== 0) throw new Error(got.stderr.trim() || `exit ${got.exitCode}`)
-    const found = parseSnapshot(got.stdout, await $.env.get('HERDR_PANE_ID'))
+    const found = await snapshot($)
     await update($, panes, () => found)
     await update($, error, () => null)
+    await update($, isLoaded, () => true)
   } catch (failure) {
-    await update($, error, () => `herdr api snapshot: ${failure instanceof Error ? failure.message : String(failure)}`)
+    await update($, error, () => said(failure))
 
     return
+  }
+}
+
+/** One marked pane's recent output, or why herdr gave none: a pane that fails costs only itself. */
+async function readPane($: EngineInterface, paneId: string): Promise<{ output: string } | { problem: string }> {
+  try {
+    const got = await $.process.run(
+      ['herdr', 'pane', 'read', paneId, '--source', 'recent-unwrapped', '--lines', String(READ_LINES)],
+      { timeoutMs: 5000 },
+    )
+
+    return got.exitCode === 0 ? { output: got.stdout } : { problem: herdrError(got.stderr, got.exitCode) }
+  } catch (failure) {
+    return { problem: notRun(said(failure)) }
   }
 }
 
@@ -58,7 +95,7 @@ async function pick($: EngineInterface, paneId: string) {
   await $.ui.close({ id: PANE })
   const token = formatToken(paneId)
   const found = (await read($, panes)).find(p => p.paneId === paneId)
-  const from = found === undefined ? paneId : describeOrigin(found, await $.env.get('HOME'))
+  const from = found === undefined ? paneId : describeOrigin(found)
   const filled = await $.prompt.fill({ text: `${token} `, mode: 'insert', decorations: decorate(token) })
   if (filled.isFilled) {
     $.ui.toast(`inserted pane from ${from}`)
@@ -69,6 +106,8 @@ async function pick($: EngineInterface, paneId: string) {
 }
 
 async function pickFirst($: EngineInterface) {
+  // the rows are not drawn while herdr does not answer: Enter has nothing to act on
+  if ((await read($, error)) !== null) return
   const list = filterPanes(await read($, panes), await read($, query))
   const target = effective(list, await read($, selected))
   if (target !== undefined) await pick($, target.paneId)
@@ -115,6 +154,11 @@ export const register: Register = on => {
   // `%word` anywhere in the draft: the picker's search without leaving the prompt box.
   on('prompt.autocomplete', { token: /^%/ }, async ($, e, next) => {
     const rest = await next(e)
+    // the person is choosing in the prompt box now: one list of panes, not two
+    if (isOpen) {
+      await $.ui.close({ id: PANE })
+      isOpen = false
+    }
     const now = await $.clock.now()
     if (suggestedAt === null || now - suggestedAt >= REFRESH_MS) {
       await refresh($)
@@ -132,14 +176,26 @@ export const register: Register = on => {
     const ids = tokenIds(e.text)
     if (ids.length === 0) return next(e)
 
+    const known = await snapshot($).catch((): PeekPane[] => [])
     const blocks: string[] = []
-    for (const id of ids) {
-      const got = await $.process.run(
-        ['herdr', 'pane', 'read', id, '--source', 'recent-unwrapped', '--lines', String(READ_LINES)],
-        { timeoutMs: 5000 },
-      )
-      blocks.push(got.exitCode === 0 ? paneContext(id, got.stdout) : paneUnreadable(id, got.stderr.trim() || `exit ${got.exitCode}`))
+    const unread: string[] = []
+    for (const id of ids.slice(0, MAX_PANES)) {
+      const got = await readPane($, id)
+      if ('output' in got) {
+        blocks.push(paneContext(id, got.output, known.find(p => p.paneId === id)))
+      } else {
+        blocks.push(paneUnreadable(id, got.problem))
+        unread.push(`${id} (${got.problem})`)
+      }
     }
+    const skipped = ids.slice(MAX_PANES)
+    if (skipped.length > 0) blocks.push(panesSkipped(skipped))
+    // The model is told in its context; the person sent the prompt believing the panes went with it.
+    const told = [
+      ...(unread.length > 0 ? [`could not read ${unread.join(', ')}`] : []),
+      ...(skipped.length > 0 ? [`read the first ${MAX_PANES} panes, not ${skipped.join(', ')}`] : []),
+    ]
+    if (told.length > 0) $.ui.toast(`pane-peek: ${told.join('; ')}`)
 
     return next({ ...e, context: [...(e.context ?? []), ...blocks] })
   }).catch(($, e, next) => next(e))
@@ -166,9 +222,12 @@ export const register: Register = on => {
     const all = await read($, panes)
     const q = await read($, query)
     const problem = await read($, error)
+    const isReading = problem === null && !(await read($, isLoaded))
     const columns = e.props.bodyColumns ?? 80
-    const list = filterPanes(all, q)
+    // what herdr last listed is not offered once it stops answering: those panes may be gone
+    const list = problem === null ? filterPanes(all, q) : []
     const total = Math.max(list.length, all.filter(p => !p.isThis).length)
+    const target = effective(list, await read($, selected))
     // lines the rows and headings may take: all but the search line, the hint and a "more" line
     const { groups, hidden } = layoutRows(list, Math.max(3, (e.viewport?.rows ?? PANE_ROWS) - 3))
 
@@ -186,19 +245,28 @@ export const register: Register = on => {
               onSubmit={() => pickFirst($)}
             />
           </Box>
-          <Text dimColor>{` ${list.length}/${total}`}</Text>
+          {problem === null && !isReading && <Text dimColor>{` ${list.length}/${total}`}</Text>}
         </Box>
         {problem !== null && <Text color="error">{problem}</Text>}
-        {problem === null && list.length === 0 && <Text color="inactive">No panes found.</Text>}
+        {isReading && <Text color="inactive">Reading herdr…</Text>}
+        {problem === null && !isReading && list.length === 0 && <Text color="inactive">No panes found.</Text>}
         {groups.map(g => (
-          <Box key={`ws:${g.workspace}`} flexDirection="column">
+          <Box key={`ws:${g.workspaceId}`} flexDirection="column">
             <Text bold color="claude">{g.workspace}</Text>
-            {g.panes.map(p => (
-              <Box key={`pane:${p.paneId}`}>
-                <Text color={statusColor(p.status)}> ● </Text>
-                <Button plain dimColor label={rowLabel(p, columns - 4)} key={`row:${p.paneId}`} onPress={() => pick($, p.paneId)} />
-              </Box>
-            ))}
+            {g.panes.map(p => {
+              const { name, title } = rowParts(p, columns - 4)
+
+              return (
+                <Box key={`pane:${p.paneId}`}>
+                  <Text color="claude">{p.paneId === target?.paneId ? '❯' : ' '}</Text>
+                  <Text color={statusColor(p.status)}>● </Text>
+                  <Button plain key={`row:${p.paneId}`} onPress={() => pick($, p.paneId)}>
+                    {name}
+                    <Text dimColor>{title}</Text>
+                  </Button>
+                </Box>
+              )
+            })}
           </Box>
         ))}
         {hidden > 0 && <Text color="inactive">{`… ${hidden} more, narrow the search`}</Text>}

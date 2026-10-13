@@ -1,6 +1,6 @@
 {
   "name": "herdr-pane-peek",
-  "description": "Claude Code mod: pick a herdr pane from any workspace and insert its id into the prompt",
+  "description": "Claude Code mod: pick a herdr pane from any workspace with /pane-peek or %word, insert its marker into the prompt, and have marked panes read for Claude when you send",
   "owner": { "name": "arthurseredaa" },
   "plugins": [{ "name": "pane-peek", "source": "./" }]
 }
